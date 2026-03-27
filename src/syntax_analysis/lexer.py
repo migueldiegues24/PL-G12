@@ -69,22 +69,6 @@ def t_IDENTIFIER(t):
     return t
 
 
-def find_column(input_string, token):
-    line_start = input_string.rfind('\n', 0, token.lexpos) + 1
-    return (token.lexpos - line_start) + 1
-
-def t_COMMENT(t):
-    r'[Cc\*][^\n]*'
-    
-    coluna = find_column(t.lexer.lexdata, t)
-    if coluna == 1:
-        pass 
-    else:
-        letra = t.value[0]
-        t.lexer.lexpos -= (len(t.value) - 1)
-        t.type = 'IDENTIFIER'
-        t.value = letra
-        return t
 
 def t_NEWLINE(t):
     r'\n+'
@@ -92,7 +76,19 @@ def t_NEWLINE(t):
     return t
 
 def t_error(t):
-    print(f"Erro léxico: Caractere não permitido '{t.value[0]}' na linha {t.lexer.lineno}")
+    coluna = find_column(t.lexer.lexdata, t)
+    
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    RESET = '\033[0m'
+    
+
+    print(f"{RED}Erro léxico:{RESET} Caractere não permitido {YELLOW}'{t.value[0]}'{RESET} na linha {t.lexer.lineno}, coluna {coluna}")
+    
     t.lexer.skip(1)
+    
+def find_column(input_string, token):
+    line_start = input_string.rfind('\n', 0, token.lexpos) + 1
+    return (token.lexpos - line_start) + 1
 
 lexer = lex.lex()

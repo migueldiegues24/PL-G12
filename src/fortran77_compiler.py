@@ -2,9 +2,9 @@ import sys
 import os
 from datetime import datetime
 
-from syntax_analysis.lexer import lexer
+from syntax_analysis.lexer import lexer, find_column
 
-def lexer_log(log_filepath, input_file, dt):
+def lexer_log(log_filepath, input_file, dt, codigo_fonte):
     try:
         with open(log_filepath, 'w', encoding='utf-8') as log_file:
             log_file.write(f"--- Relatório de Análise Léxica ---\n")
@@ -14,10 +14,13 @@ def lexer_log(log_filepath, input_file, dt):
             
             count = 0
             for token in lexer:
-                log_file.write(f"{token}\n")
-                count += 1
+                coluna = find_column(codigo_fonte, token)
                 
+                log_file.write(f"LexToken({token.type}, {repr(token.value)}, line={token.lineno}, col={coluna})\n")
+                count += 1
+            
             log_file.write(f"\nTotal de tokens processados: {count}\n")
+            print(f"Log gerado com sucesso em: {log_filepath}")
 
     except Exception as e:
         print(f"Ocorreu um erro ao escrever no ficheiro de log: {e}")
@@ -52,7 +55,7 @@ def main():
     
     lexer.input(codigo_fonte)
 
-    lexer_log(log_filepath, input_file, dt)
+    lexer_log(log_filepath, input_file, dt, codigo_fonte)
 
 
 if __name__ == "__main__":
