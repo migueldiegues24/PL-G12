@@ -23,7 +23,7 @@ keywords = {
 tokens = [
     'IDENTIFIER', 'NUMBER', 'STRING', 'BOOL',
     'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'ASSIGN',
-    'EQ', 'LE', 'GT', 'AND',
+    'EQ', 'LE', 'GT', 'AND', 'OR', 'NOT'
     'LPAREN', 'RPAREN', 'COMMA',
     'NEWLINE'
 ] + list(keywords.values())
@@ -43,6 +43,8 @@ t_EQ  = r'\.EQ\.'
 t_LE  = r'\.LE\.'
 t_GT  = r'\.GT\.'
 t_AND = r'\.AND\.'
+t_OR = r'\.OR\.'
+t_NOT = r'\.NOT\.'
 
 def t_BOOL(t):
     r'\.(TRUE|FALSE)\.'
