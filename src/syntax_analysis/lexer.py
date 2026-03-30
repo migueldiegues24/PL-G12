@@ -1,6 +1,6 @@
 import ply.lex as lex
 
-reserved = {
+keywords = {
     'program': 'PROGRAM',
     'read': 'READ',
     'print': 'PRINT',
@@ -26,7 +26,7 @@ tokens = [
     'EQ', 'LE', 'GT', 'AND',
     'LPAREN', 'RPAREN', 'COMMA',
     'NEWLINE'
-] + list(reserved.values())
+] + list(keywords.values())
 
 t_ignore = ' \t'
 
@@ -54,7 +54,7 @@ def t_STRING(t):
     t.value = t.value[1:-1]
     return t
 
-def t_NUMBER(t):
+def t_NUMBER(t): # já passa o valor do numero para a análise sintática
     r'\d+(\.\d+)?'
     if '.' in t.value:
         t.value = float(t.value)
@@ -65,10 +65,8 @@ def t_NUMBER(t):
 def t_IDENTIFIER(t):
     r'[a-zA-Z_][a-zA-Z_0-9]*'
     palavra_em_minusculas = t.value.lower()
-    t.type = reserved.get(palavra_em_minusculas, 'IDENTIFIER')
+    t.type = keywords.get(palavra_em_minusculas, 'IDENTIFIER')
     return t
-
-
 
 def t_NEWLINE(t):
     r'\n+'
