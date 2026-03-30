@@ -53,8 +53,8 @@ def main():
 
     print(f"A executar análise léxica: {input_file}...")
     
+    # Etapa 1: analise léxica
     lexer.input(codigo_fonte)
-
     lexer_log(log_filepath, input_file, dt, codigo_fonte)
 
 

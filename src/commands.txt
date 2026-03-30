@@ -1,0 +1,14 @@
+ATIVAR AMBIENTE PYTHON: 
+
+    1 - python3 -m venv venv    
+
+    2- source venv/bin/activate
+
+    3- deactivate
+
+====== 
+
+EXECUTAR TESTES UNITÁRIOS:
+
+
+    python3 -m unittest discover -s tests
