@@ -17,13 +17,14 @@ keywords = {
     'end': 'END',
     'function': 'FUNCTION',
     'subroutine': 'SUBROUTINE',
+    'call': 'CALL',
     'return': 'RETURN'
 }
 
 tokens = [
     'IDENTIFIER', 'NUMBER', 'STRING', 'BOOL',
     'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'ASSIGN',
-    'EQ', 'LE', 'GT', 'AND',
+    'EQ', 'NE', 'LT', 'LE', 'GT', 'GE', 'AND', 'OR', 'NOT',
     'LPAREN', 'RPAREN', 'COMMA',
     'NEWLINE'
 ] + list(keywords.values())
@@ -40,9 +41,14 @@ t_RPAREN  = r'\)'
 t_COMMA   = r','
 
 t_EQ  = r'\.EQ\.'
+t_NE  = r'\.NE\.'
+t_LT  = r'\.LT\.'
 t_LE  = r'\.LE\.'
 t_GT  = r'\.GT\.'
+t_GE  = r'\.GE\.'
 t_AND = r'\.AND\.'
+t_OR  = r'\.OR\.'
+t_NOT = r'\.NOT\.'
 
 def t_BOOL(t):
     r'\.(TRUE|FALSE)\.'

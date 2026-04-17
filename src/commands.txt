@@ -12,3 +12,7 @@ EXECUTAR TESTES UNITÁRIOS:
 
 
     python3 -m unittest discover -s tests
+
+
+
+    npx repomix

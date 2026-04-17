@@ -1,41 +1,38 @@
 import sys
 import os
 from datetime import datetime
+import pprint
 
-from syntax_analysis.lexer import lexer, find_column
+# Imports do teu compilador
+from syntax_analysis.lexer import lexer
+from syntax_analysis.parser import parser
 
-def lexer_log(log_filepath, input_file, dt, codigo_fonte):
+def save_log(filepath, content, title, input_file, dt):
+    """Função genérica para salvar logs formatados"""
     try:
-        with open(log_filepath, 'w', encoding='utf-8') as log_file:
-            log_file.write(f"--- Relatório de Análise Léxica ---\n")
-            log_file.write(f"Ficheiro Fonte: {input_file}\n")
-            log_file.write(f"Data/Hora: {dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            log_file.write("-" * 35 + "\n\n")
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"--- {title} ---\n")
+            f.write(f"Ficheiro Fonte: {input_file}\n")
+            f.write(f"Data/Hora: {dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("-" * 40 + "\n\n")
             
-            count = 0
-            for token in lexer:
-                coluna = find_column(codigo_fonte, token)
+            if isinstance(content, (list, tuple)):
+                f.write(pprint.pformat(content, indent=2, width=80))
+            else:
+                f.write(str(content))
                 
-                log_file.write(f"LexToken({token.type}, {repr(token.value)}, line={token.lineno}, col={coluna})\n")
-                count += 1
-            
-            log_file.write(f"\nTotal de tokens processados: {count}\n")
-            print(f"Log gerado com sucesso em: {log_filepath}")
-
+            print(f"Log de {title} gerado em: {filepath}")
     except Exception as e:
-        print(f"Ocorreu um erro ao escrever no ficheiro de log: {e}")
-
+        print(f"Erro ao gravar log: {e}")
 
 def main():
     if len(sys.argv) < 2:
-        print("Argumentos Insuficientes.")
-        print("Exemplo: python3 fortran77_compiler.py examples/exemplo1_hello.f")
+        print("Uso: python3 fortran77_compiler.py examples/exemplo.f")
         sys.exit(1)
 
     input_file = sys.argv[1]
-
     if not os.path.exists(input_file):
-        print(f"Erro: O ficheiro '{input_file}' não foi encontrado.")
+        print(f"Erro: Ficheiro '{input_file}' não encontrado.")
         sys.exit(1)
 
     with open(input_file, 'r', encoding='utf-8') as f:
@@ -43,20 +40,27 @@ def main():
 
     dt = datetime.now()
     timestamp = dt.strftime("%Y-%m-%d_%H-%M-%S")
-    log_filename = f"{timestamp}_lexer_output.log"
-    
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-        
-    log_filepath = os.path.join(log_dir, log_filename)
 
+    # 1. Análise léxica
     print(f"A executar análise léxica: {input_file}...")
-    
-    # Etapa 1: analise léxica
     lexer.input(codigo_fonte)
-    lexer_log(log_filepath, input_file, dt, codigo_fonte)
+    tokens_list = [str(tok) for tok in lexer]
+    lexer_log_path = os.path.join(log_dir, f"{timestamp}_lexer.log")
+    save_log(lexer_log_path, "\n".join(tokens_list), "Relatório Léxico", input_file, dt)
 
+    # 2. ANÁLISE SINTÁTICA
+    print(f"A executar análise sintática: {input_file}...")
+    ast = parser.parse(codigo_fonte)
+
+    if ast:
+        parser_log_path = os.path.join(log_dir, f"{timestamp}_parser_ast.log")
+        save_log(parser_log_path, ast, "Árvore Sintática Abstrata (AST)", input_file, dt)
+        print("\033[92mSucesso:\033[0m Programa gramaticalmente correto.")
+    else:
+        print("\033[91mErro:\033[0m A análise sintática falhou.")
 
 if __name__ == "__main__":
     main()
