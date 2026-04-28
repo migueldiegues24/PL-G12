@@ -54,6 +54,8 @@ def compatible_assign(target_type, value_type):
 def is_condition_type(t):
     return t in LOGICAL
 
+def is_numeric_type(t):
+    return t in NUMERIC
 
 # Verifica se um tipo pode ser usado como índice de array (tem de ser integer).
 def is_index_type(t):
