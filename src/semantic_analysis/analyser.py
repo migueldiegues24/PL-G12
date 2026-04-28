@@ -3,11 +3,12 @@ from semantic_analysis.semantic_errors import SemanticErrorReporter, SemanticErr
 from semantic_analysis.builtins import register_builtins
 from semantic_analysis.type_rules import (
     result_type_arith,
+    result_type_unary_arith,
     result_type_logic,
+    result_type_unary_logic,
     result_type_relop,
     compatible_assign,
     is_condition_type,
-    result_type_unary_logic,
     is_numeric_type,
     is_index_type,
 )
@@ -23,7 +24,7 @@ class SemanticAnalyser:
         self.table = SymbolTable()
         self.reporter = SemanticErrorReporter()
         self.current_function = None      # nome da função em análise (para validar 'CONVRT = VAL')
-        self.referenced_labels = set()
+        self.referenced_labels = []       # [(label, line)] usadas em GOTO/DO no scope corrente
         register_builtins(self.table)     # MOD e companhia no global
 
     # Entry point. Devolve (ast_anotada, tabela, reporter).
@@ -47,28 +48,35 @@ class SemanticAnalyser:
                 self._declare_subroutine(unit)
 
     def _declare_function(self, node):
-        tag, return_type, name, args, body = node 
-        
-        func_symbol = Symbol(
-            name=name,
-            type=return_type,
-            kind='function',
-            params=args
-        )
-        self.table.declare(func_symbol)
+        # ('function', return_type_or_None, name, params_names, body)
+        _, return_type, name, params, _ = node
+        try:
+            self.table.declare(Symbol(
+                name=name,
+                type=return_type,
+                kind='function',
+                # 'params' guarda a aridade (lista de tipos por preencher);
+                # os tipos só ficam definitivos após visitar as declarações
+                # do corpo da função na passagem 2.
+                params=[None] * len(params),
+            ))
+        except SemanticError as e:
+            self.reporter.errors.append(e)
+            print(e.formatted())
 
     def _declare_subroutine(self, node):
-        # Supondo que a AST para subroutine é: ('subroutine', NOME, args, body)
-        tag, name, args, body = node
-        
-        sub_symbol = Symbol(
-            name=name,
-            type=None,         # Subrotinas não têm tipo de retorno
-            kind='subroutine',
-            params=args
-        )
-        
-        self.table.declare(sub_symbol)
+        # ('subroutine', name, params_names, body)
+        _, name, params, _ = node
+        try:
+            self.table.declare(Symbol(
+                name=name,
+                type=None,
+                kind='subroutine',
+                params=[None] * len(params),
+            ))
+        except SemanticError as e:
+            self.reporter.errors.append(e)
+            print(e.formatted())
 
 
     # =====================================================================
@@ -91,373 +99,477 @@ class SemanticAnalyser:
             return node
 
     def generic_visit(self, node):
-        new_elements = []
-        
-        for item in node:
-            if isinstance(item, tuple):
-                # nó filho da AST (ex: ('var', 'X')) -> visita recursiva
-                new_elements.append(self.visit(item))
-            elif isinstance(item, list):
-                # lista de nós (ex: corpo do programa, lista de argumentos)
-                visited_list = []
-                for sub_item in item:
-                    if isinstance(sub_item, tuple):
-                        visited_list.append(self.visit(sub_item))
-                    else:
-                        visited_list.append(sub_item)
-                new_elements.append(visited_list)
-            else:
-                # É um valor primitivo (a tag do nó, nome de variável, número de linha, etc.)
-                new_elements.append(item)
-                
-        # Reconstrói o nó com as partes possivelmente anotadas/transformadas
-        return tuple(new_elements)
+        return node
+
+    # Devolve o tipo anotado de um nó-expressão. Convencionamos que toda a
+    # expressão visitada termina com {'type': ...} no último elemento.
+    def _type_of(self, expr):
+        if isinstance(expr, tuple) and len(expr) >= 1:
+            last = expr[-1]
+            if isinstance(last, dict) and 'type' in last:
+                return last['type']
+        return None
 
 
     # ---------- Program units ----------
-    
+
     def visit_program(self, node):
-        #('program', [lista_de_unidades])
+        # ('program', [lista_de_unidades])
         tag, units = node
-        
-        annotated_units = []
-        for unit in units:
-            annotated_units.append(self.visit(unit))
-            
+        annotated_units = [self.visit(u) for u in units]
         return (tag, annotated_units)
 
 
     def visit_main_program(self, node):
         # ('main_program', NOME, body)
         tag, name, body = node
-        
+
         self.table.push_scope(name=name)
-        
-        # 2. Visitar o corpo (que vai processar as declarações e os statements)
-        # Variáveis do main são guardadas no scope que acabámos de criar.
+        self.referenced_labels = []
+
         annotated_body = self.visit(body)
-        
-        # 3. Correr as validações finais desta program unit
-        # (ex: verificar se todos os 'goto 10' apontam para labels que realmente existem)
         self._validate_labels()
-        
-        # 4. Sair do scope local (limpa as variáveis locais para a próxima program unit)
+
         self.table.pop_scope()
-        
-        # Devolve o nó reconstruído
         return (tag, name, annotated_body)
 
     def visit_function(self, node):
-        # ('function, return_type, tag(name), args, body)
-        tag, return_type, name, args, body = node
-        
+        # ('function', return_type, name, params_names, body)
+        tag, return_type, name, params, body = node
+
         self.current_function = name
-        
         self.table.push_scope(name=name)
-        
-        # Registar os parâmetros na tabela local ANTES de visitar o body.
-        # (O tipo fica None por agora, será preenchido quando o visit_decl os encontrar)
-        for arg in args:
-            param_symbol = Symbol(name=arg, type=None, kind='param')
-            self.table.declare(param_symbol)
-        
-        #Visitar o corpo da função
+        self.referenced_labels = []
+
+        # Parâmetros declarados no scope local (tipo ainda desconhecido).
+        for arg in params:
+            try:
+                self.table.declare(Symbol(name=arg, type=None, kind='param', initialized=True))
+            except SemanticError as e:
+                self.reporter.errors.append(e)
+                print(e.formatted())
+
+        # O nome da função vive também no scope local como variável do tipo
+        # de retorno — em Fortran 77, atribuir ao nome da função define o
+        # valor de retorno (ex: 'CONVRT = VAL').
+        try:
+            self.table.declare(Symbol(name=name, type=return_type, kind='var'))
+        except SemanticError:
+            pass
+
         annotated_body = self.visit(body)
-        
-        #Fazer as validações de labels
+
+        # Sincroniza tipos dos parâmetros para o símbolo global após declarações.
+        # Tem de ser lookup_global: localmente o nome da função existe como
+        # 'var' (para o valor de retorno) e iria fazer shadow.
+        global_sym = self.table.lookup_global(name)
+        if global_sym and global_sym.kind == 'function':
+            global_sym.params = [
+                self.table.lookup_local(p).type if self.table.lookup_local(p) else None
+                for p in params
+            ]
+            local_self = self.table.lookup_local(name)
+            if local_self and local_self.type and not global_sym.type:
+                global_sym.type = local_self.type
+
         self._validate_labels()
-        
-        #Sair do scope e limpar o contexto da função
         self.table.pop_scope()
         self.current_function = None
-        
-        #Devolver o nó reconstruído com a estrutura completa!
-        return (tag, return_type, name, args, annotated_body)
+        return (tag, return_type, name, params, annotated_body)
 
     def visit_subroutine(self, node):
-        # ('subroutine', name, args, body)
-        tag, name, args, body = node
-        
+        # ('subroutine', name, params_names, body)
+        tag, name, params, body = node
+
         self.table.push_scope(name=name)
-        
-        for arg in args:
-            param_symbol = Symbol(name=arg, type=None, kind='param')
-            self.table.declare(param_symbol)
-        
+        self.referenced_labels = []
+
+        for arg in params:
+            try:
+                self.table.declare(Symbol(name=arg, type=None, kind='param', initialized=True))
+            except SemanticError as e:
+                self.reporter.errors.append(e)
+                print(e.formatted())
+
         annotated_body = self.visit(body)
-        
+
+        global_sym = self.table.lookup_global(name)
+        if global_sym and global_sym.kind == 'subroutine':
+            global_sym.params = [
+                self.table.lookup_local(p).type if self.table.lookup_local(p) else None
+                for p in params
+            ]
+
         self._validate_labels()
-        
         self.table.pop_scope()
-        
-        return (tag, name, args, annotated_body)
+        return (tag, name, params, annotated_body)
 
 
     def visit_body(self, node):
         # ('body', [lista_de_declaracoes_e_statements])
         tag, statements = node
-        
-        annotated_statements = []
-        for stmt in statements:
-            annotated_statements.append(self.visit(stmt))
-            
-        return (tag, annotated_statements)
+        annotated = [self.visit(s) for s in statements]
+        return (tag, annotated)
 
 
     # ---------- Declarações ----------
     def visit_decl(self, node):
-        #('decl', 'integer', [('var_decl', 'N'), ('array_decl', 'NUMS', 10)])
+        # ('decl', 'integer', [('var_decl', 'N'), ('array_decl', 'NUMS', 10)])
         tag, var_type, decls = node
-        
+
         for dec in decls:
             dec_tag = dec[0]
             dec_name = dec[1]
-            
-            existing_symbol = self.table.lookup_local(dec_name)
-            
-            if existing_symbol:
-                if existing_symbol.kind == 'param':
-                    existing_symbol.type = var_type
-                    
+
+            existing = self.table.lookup_local(dec_name)
+
+            # Forward declaration do tipo de retorno de uma função externa:
+            # 'INTEGER CONVRT' no main, quando CONVRT é uma function global.
+            # Não cria variável local — apenas confirma o tipo.
+            if existing is None and dec_tag == 'var_decl':
+                global_sym = self.table.lookup_global(dec_name)
+                if global_sym and global_sym.kind == 'function':
+                    if global_sym.type is None:
+                        global_sym.type = var_type
+                    elif global_sym.type != var_type:
+                        raise SemanticError(
+                            f"Tipo declarado ('{var_type}') não coincide com tipo de retorno de '{dec_name}' ('{global_sym.type}')"
+                        )
+                    continue
+
+            if existing:
+                # Promoção de parâmetro a tipo concreto, ou de variável
+                # implícita (nome da função) ao tipo declarado.
+                if existing.kind in ('param', 'var') and existing.type is None:
+                    existing.type = var_type
                     if dec_tag == 'array_decl':
-                        existing_symbol.kind = 'array'
-                        existing_symbol.size = dec[2]
+                        existing.kind = 'array'
+                        existing.size = dec[2]
+                elif existing.kind == 'var' and existing.type == var_type and dec_name == self.current_function:
+                    # Redeclaração do nome da função com o mesmo tipo: aceita.
+                    pass
                 else:
-                    # Se não for parâmetro, o programador está a redeclarar uma variável local
-                    raise SemanticError(f"Variável '{dec_name}' já foi declarada neste scope.")
-            
+                    raise SemanticError(
+                        f"Variável '{dec_name}' já declarada neste scope"
+                    )
             else:
                 if dec_tag == 'var_decl':
-                    new_symbol = Symbol(name=dec_name, type=var_type, kind='var')
-                    
+                    self.table.declare(Symbol(name=dec_name, type=var_type, kind='var'))
                 elif dec_tag == 'array_decl':
-                    size = dec[2] # O terceiro elemento é o tamanho do array
-                    new_symbol = Symbol(name=dec_name, type=var_type, kind='array', size=size)
-                
-                self.table.declare(new_symbol)
+                    size = dec[2]
+                    self.table.declare(Symbol(name=dec_name, type=var_type, kind='array', size=size))
 
-        # Como os nós de declaração servem apenas para alimentar a Tabela de Símbolos,
-        # não precisamos de os reescrever ou anotar. Podemos devolver o nó original tal como entrou.
         return node
-            
 
 
     # ---------- Statements ----------
     def visit_labeled(self, node):
-        pass
+        # ('labeled', N, stmt_simples)
+        tag, label, stmt = node
+        try:
+            self.table.declare_label(label, stmt[0])
+        except SemanticError as e:
+            self.reporter.errors.append(e)
+            print(e.formatted())
+        return (tag, label, self.visit(stmt))
 
     def visit_assign(self, node):
-        pass
+        # ('assign', target, expr) onde target é ('var', NAME) ou ('index', NAME, args)
+        tag, target, expr = node
+        expr_v = self.visit(expr)
+        target_v, target_type = self._resolve_assign_target(target)
+        value_type = self._type_of(expr_v)
+
+        if target_type and value_type and not compatible_assign(target_type, value_type):
+            raise SemanticError(
+                f"Atribuição incompatível: {target_type} := {value_type}"
+            )
+        return (tag, target_v, expr_v)
+
+    def _resolve_assign_target(self, target):
+        if target[0] == 'var':
+            name = target[1]
+            sym = self.table.lookup(name)
+            if sym.kind == 'array':
+                raise SemanticError(
+                    f"'{name}' é um array — falta o índice na atribuição"
+                )
+            if sym.kind in ('function', 'subroutine'):
+                # Atribuir ao nome de função/subrotina só é válido se for a
+                # função actual (em Fortran 77 essa é a forma de devolver valor).
+                if sym.kind == 'function' and name == self.current_function:
+                    self.table.initialize(name)
+                    return (target, sym.type)
+                raise SemanticError(
+                    f"Não é possível atribuir a '{name}' (é {sym.kind})"
+                )
+            self.table.initialize(name)
+            return (target, sym.type)
+
+        if target[0] == 'index':
+            _, name, args = target
+            sym = self.table.lookup(name)
+            if sym.kind != 'array':
+                raise SemanticError(f"'{name}' não é um array; não pode ser indexado")
+            if len(args) != 1:
+                raise SemanticError(
+                    f"Array '{name}' espera 1 índice, recebeu {len(args)}"
+                )
+            arg_v = self.visit(args[0])
+            if not is_index_type(self._type_of(arg_v)):
+                raise SemanticError(f"Índice de array '{name}' tem de ser integer")
+            return (('index', name, [arg_v]), sym.type)
+
+        raise SemanticError(f"Alvo de atribuição inválido: {target}")
 
     def visit_if_logico(self, node):
-        pass
+        # ('if_logico', cond, stmt)
+        tag, cond, stmt = node
+        cond_v = self.visit(cond)
+        if not is_condition_type(self._type_of(cond_v)):
+            raise SemanticError("Condição do IF tem de ser logical")
+        return (tag, cond_v, self.visit(stmt))
 
     def visit_if_then(self, node):
-        pass
+        # ('if_then', cond, [stmts], [])
+        tag, cond, stmts, _ = node
+        cond_v = self.visit(cond)
+        if not is_condition_type(self._type_of(cond_v)):
+            raise SemanticError("Condição do IF tem de ser logical")
+        body = [self.visit(s) for s in stmts]
+        return (tag, cond_v, body, [])
 
     def visit_if_then_else(self, node):
-        pass
+        # ('if_then_else', cond, [then], [else])
+        tag, cond, then_stmts, else_stmts = node
+        cond_v = self.visit(cond)
+        if not is_condition_type(self._type_of(cond_v)):
+            raise SemanticError("Condição do IF tem de ser logical")
+        then_b = [self.visit(s) for s in then_stmts]
+        else_b = [self.visit(s) for s in else_stmts]
+        return (tag, cond_v, then_b, else_b)
 
     def visit_do(self, node):
-        pass
+        # ('do', label_alvo, var_name, expr_inicio, expr_fim, expr_step_or_None)
+        tag, label, var_name, e_ini, e_fim, e_step = node
+        sym = self.table.lookup(var_name)
+        if sym.kind not in ('var', 'param'):
+            raise SemanticError(f"Variável de DO inválida: '{var_name}'")
+        if not is_index_type(sym.type):
+            raise SemanticError(f"Variável de DO '{var_name}' tem de ser integer")
+        self.table.initialize(var_name)
+
+        ini_v  = self.visit(e_ini)
+        fim_v  = self.visit(e_fim)
+        step_v = self.visit(e_step) if e_step is not None else None
+
+        for expr_v, who in ((ini_v, 'inicial'), (fim_v, 'final')):
+            t = self._type_of(expr_v)
+            if not is_numeric_type(t):
+                raise SemanticError(f"Limite {who} do DO tem de ser numérico")
+        if step_v is not None and not is_numeric_type(self._type_of(step_v)):
+            raise SemanticError("Passo do DO tem de ser numérico")
+
+        self.referenced_labels.append((label, None))
+        return (tag, label, var_name, ini_v, fim_v, step_v)
 
     def visit_goto(self, node):
-        pass
+        # ('goto', N)
+        _, label = node
+        self.referenced_labels.append((label, None))
+        return node
 
     def visit_return(self, node):
-        pass
+        return node
 
     def visit_continue(self, node):
-        pass
+        return node
 
     def visit_read(self, node):
-        pass
+        # ('read', [itens])
+        tag, items = node
+        return (tag, [self._visit_io_target(it) for it in items])
+
+    def _visit_io_target(self, it):
+        # READ aceita variáveis simples ou elementos de array como destino.
+        if isinstance(it, tuple) and it[0] == 'var':
+            name = it[1]
+            sym = self.table.lookup(name)
+            if sym.kind == 'array':
+                raise SemanticError(f"READ em '{name}' (array) — falta o índice")
+            if sym.kind not in ('var', 'param'):
+                raise SemanticError(f"READ destino inválido: '{name}'")
+            self.table.initialize(name)
+            return ('var', name, {'type': sym.type})
+
+        if isinstance(it, tuple) and it[0] == 'call_or_array':
+            _, name, args = it
+            sym = self.table.lookup(name)
+            if sym.kind != 'array':
+                raise SemanticError(f"READ em '{name}': só variáveis e elementos de array")
+            if len(args) != 1:
+                raise SemanticError(f"Array '{name}' espera 1 índice")
+            arg_v = self.visit(args[0])
+            if not is_index_type(self._type_of(arg_v)):
+                raise SemanticError(f"Índice de array '{name}' tem de ser integer")
+            return ('index', name, [arg_v], {'type': sym.type})
+
+        raise SemanticError("Item de READ tem de ser variável ou elemento de array")
 
     def visit_print(self, node):
-        pass
+        # ('print', [itens])
+        tag, items = node
+        return (tag, [self.visit(i) for i in items])
 
     def visit_call(self, node):
-        pass
+        # ('call', NOME, args) — vinda do CALL statement (subrotina).
+        tag, name, args = node
+        sym = self.table.lookup(name)
+        if sym.kind not in ('subroutine', 'function'):
+            raise SemanticError(f"'{name}' não é subrotina nem função")
+        args_v = [self.visit(a) for a in args]
+        expected = len(sym.params or [])
+        if len(args_v) != expected:
+            raise SemanticError(
+                f"'{name}' espera {expected} arg(s), recebeu {len(args_v)}"
+            )
+        return (tag, name, args_v)
 
 
     # ---------- Expressões ----------
-    # Devolvem tipicamente (nó_possivelmente_reescrito_e_anotado).
-    # O tipo deve ser anexado como último elemento do tuplo, na forma
-    # de um dict {'type': 'integer'|'real'|'logical'|'string'}.
+    # Devolvem (nó_anotado_com_dict_de_tipo_no_fim).
     def visit_num(self, node):
-        #  ('num', 10) ou ('num', 3.14)
+        # ('num', 10) ou ('num', 3.14)
         tag, value = node
-        
-        # Inferimos o tipo de Fortran com base no tipo do valor no Python
-        if isinstance(value, float):
-            val_type = 'real'
-        else:
-            val_type = 'integer'
-            
-        # Devolve o nó original MAIS o dicionário de anotação
+        val_type = 'real' if isinstance(value, float) else 'integer'
         return (tag, value, {'type': val_type})
-
 
     def visit_var(self, node):
         # ('var', 'N')
         tag, name = node
-        
-        # Vai à tabela de símbolos garantir que a variável existe.
-        # O método lookup já lança SemanticError se não encontrar.
         symbol = self.table.lookup(name)
-        
-        # Devolve o nó reconstruído com o tipo pendurado
+        if symbol.kind in ('function', 'subroutine'):
+            # Uso do nome como valor: só legal se for o nome da função actual
+            # (referência ao "valor de retorno" antes de RETURN).
+            if symbol.kind == 'function' and name == self.current_function:
+                return (tag, name, {'type': symbol.type})
+            raise SemanticError(
+                f"'{name}' é {symbol.kind} e não pode ser usado como variável"
+            )
+        if symbol.kind == 'var' and not symbol.initialized and name != self.current_function:
+            self.reporter.report(f"Variável '{name}' usada sem ter sido inicializada")
         return (tag, name, {'type': symbol.type})
 
     def visit_bool(self, node):
-        # ('bool', True) ou ('bool', False)
+        # ('bool', True/False)
         tag, value = node
-        
         return (tag, value, {'type': 'logical'})
 
     def visit_string(self, node):
         # ('string', 'valor')
         tag, value = node
-        
         return (tag, value, {'type': 'string'})
 
-    # Resolve a ambiguidade da gramática do fortran 77: ('call_or_array', NOME, args)
-    # passa a ('call', NOME, args) ou ('index', NOME, args) consoante
-    # o que estiver na tabela.
+    # Resolve a ambiguidade da gramática do Fortran 77:
+    # ('call_or_array', NOME, args) → ('call', ...) ou ('index', ...) consoante
+    # o que estiver na tabela de símbolos.
     def visit_call_or_array(self, node):
-        # ('call_or_array', 'MOD', [('var', 'QUOT'), ('var', 'B')])
-        tag, name, args = node
-        
-        # Procurar o símbolo na tabela
-        # Se não existir, o lookup já dispara o SemanticError natural.
+        _, name, args = node
         symbol = self.table.lookup(name)
-        
-        # Visitar os argumentos independentemente do que for (função ou array)
-        # Isto processa as variáveis/números lá dentro e pendura o {'type': ...} em cada um.
         annotated_args = [self.visit(arg) for arg in args]
-        
-        # Desambiguação baseada no 'kind' registado na Tabela de Símbolos
+
         if symbol.kind == 'function':
-            # É uma chamada de função.
-            # O tipo de retorno deste nó é o tipo da função (ex: 'integer' para MOD)
+            expected = len(symbol.params or [])
+            if len(annotated_args) != expected:
+                raise SemanticError(
+                    f"Função '{name}' espera {expected} arg(s), recebeu {len(annotated_args)}"
+                )
             return ('call', name, annotated_args, {'type': symbol.type})
-            
-        elif symbol.kind == 'array':
-            # É um acesso a um array.
-            # Validação: Em Fortran, todos os índices de arrays TÊM de ser 'integer'
-            for i, arg in enumerate(annotated_args):
-                arg_type = arg[-1]['type']
-                if not is_index_type(arg_type):
-                    raise SemanticError(
-                        f"O índice {i+1} do array '{name}' tem de ser 'integer', mas recebeu '{arg_type}'."
-                    )
-            
-            # O tipo deste nó é o tipo dos elementos do array.
+
+        if symbol.kind == 'array':
+            if len(annotated_args) != 1:
+                raise SemanticError(
+                    f"Array '{name}' espera 1 índice, recebeu {len(annotated_args)}"
+                )
+            arg_type = self._type_of(annotated_args[0])
+            if not is_index_type(arg_type):
+                raise SemanticError(
+                    f"Índice do array '{name}' tem de ser 'integer', mas recebeu '{arg_type}'"
+                )
             return ('index', name, annotated_args, {'type': symbol.type})
-            
-        else:
-            # O programador tentou meter parênteses à frente de uma variável normal!
-            # Exemplo: NUM = 10 \n PRINT, NUM(5)
-            raise SemanticError(
-                f"O identificador '{name}' está a ser usado com parênteses, mas foi declarado como '{symbol.kind}' (não é função nem array)."
-            )
+
+        raise SemanticError(
+            f"'{name}' não é função nem array — não pode ser chamado/indexado"
+        )
+
+    def visit_index(self, node):
+        # Pode aparecer já anotado pelo parser (atribuição a array).
+        _, name, args = node
+        sym = self.table.lookup(name)
+        if sym.kind != 'array':
+            raise SemanticError(f"'{name}' não é array")
+        if len(args) != 1:
+            raise SemanticError(f"Array '{name}' espera 1 índice")
+        arg_v = self.visit(args[0])
+        if not is_index_type(self._type_of(arg_v)):
+            raise SemanticError(f"Índice de array '{name}' tem de ser integer")
+        return ('index', name, [arg_v], {'type': sym.type})
 
     def visit_binop(self, node):
-        #  ('binop', '+', ('var', 'A'), ('num', 1))
+        # ('binop', '+', left, right)
         tag, op, left, right = node
-        
-        # Visitar os filhos para processar as expressões abaixo
-        annotated_left = self.visit(left)
-        annotated_right = self.visit(right)
-        
-        # Extrair os tipos dos filhos anotados
-        type_left = annotated_left[-1]['type']
-        type_right = annotated_right[-1]['type']
-        
-        # Validar a semântica da operação aritmética
-        result_type = result_type_arith(type_left, op, type_right)
-        
-        if not result_type:
+        l = self.visit(left)
+        r = self.visit(right)
+        t = result_type_arith(self._type_of(l), op, self._type_of(r))
+        if t is None:
             raise SemanticError(
-                f"Operação '{op}' inválida entre tipos '{type_left}' e '{type_right}'."
+                f"Operação '{op}' inválida entre '{self._type_of(l)}' e '{self._type_of(r)}'"
             )
-            
-        # Devolver o nó reconstruído com o tipo resultante da operação
-        return (tag, op, annotated_left, annotated_right, {'type': result_type})
+        return (tag, op, l, r, {'type': t})
 
     def visit_unop(self, node):
-        # ('unop', '-', ('var', 'X'))
+        # ('unop', '-', expr)
         tag, op, expr = node
-        
-        # Visitar a expressão filha
-        annotated_expr = self.visit(expr)
-        
-        # Extrair o tipo
-        expr_type = annotated_expr[-1]['type']
-        
-        # Validar se a expressão é numérica
-        if not is_numeric_type(expr_type):
+        e = self.visit(expr)
+        t = result_type_unary_arith(self._type_of(e))
+        if t is None:
             raise SemanticError(
-                f"Operador unário '{op}' não pode ser aplicado ao tipo '{expr_type}'."
+                f"Operador unário '{op}' não pode ser aplicado a '{self._type_of(e)}'"
             )
-            
-        # Devolver o nó reconstruído (o tipo mantém-se)
-        return (tag, op, annotated_expr, {'type': expr_type})
+        return (tag, op, e, {'type': t})
 
     def visit_relop(self, node):
-        # ('relop', '.GT.', ('var', 'QUOT'), ('num', 0))
+        # ('relop', '.GT.', left, right)
         tag, op, left, right = node
-        
-        annotated_left  = self.visit(left)
-        annotated_right = self.visit(right)
-        
-        left_type   = annotated_left[-1]['type']
-        right_type  = annotated_right[-1]['type']
-        
-        expr_type = result_type_relop(left_type,op,right_type)
-        if not expr_type:
+        l = self.visit(left)
+        r = self.visit(right)
+        t = result_type_relop(self._type_of(l), op, self._type_of(r))
+        if t is None:
             raise SemanticError(
-                f"Operador '{op}' não pode ser aplicado aos tipos da expressão: {left_type}, {right_type}"
+                f"Comparação '{op}' inválida entre '{self._type_of(l)}' e '{self._type_of(r)}'"
             )
-        return (tag, op, annotated_left, annotated_right, {'type': expr_type})
+        return (tag, op, l, r, {'type': t})
 
     def visit_logop(self, node):
-        # ('logop', '.AND.', left_expr, right_expr)
+        # ('logop', 'and'/'or', left, right)
         tag, op, left, right = node
-        
-        # Visitar os nós filhos
-        annotated_left  = self.visit(left)
-        annotated_right = self.visit(right)
-        
-        # Extrair os tipos
-        left_type   = annotated_left[-1]['type']
-        right_type  = annotated_right[-1]['type']
-        
-        # Validar a semântica (têm de ser ambos 'logical')
-        expr_type = result_type_logic(left_type, op, right_type)
-        
-        if not expr_type:
+        l = self.visit(left)
+        r = self.visit(right)
+        t = result_type_logic(self._type_of(l), op, self._type_of(r))
+        if t is None:
             raise SemanticError(
-                f"Operador lógico '{op}' não pode ser aplicado aos tipos da expressão: '{left_type}' e '{right_type}'."
+                f"Operador lógico '{op}' exige operandos logical"
             )
-            
-        # Devolver o nó anotado
-        return (tag, op, annotated_left, annotated_right, {'type': expr_type})
+        return (tag, op, l, r, {'type': t})
 
     def visit_not(self, node):
         # ('not', expr)
         tag, expr = node
-        
-        annotated_expr = self.visit(expr)
-        expr_type = annotated_expr[-1]['type']
-        
-        # Em Fortran, o .NOT. só pode ser aplicado a expressões lógicas)
-        if expr_type != 'logical':
-            raise SemanticError(
-                f"Operador '.NOT.' exige o tipo 'logical', mas recebeu '{expr_type}'."
-            )
-            
-        return (tag, annotated_expr, {'type': 'logical'})
+        e = self.visit(expr)
+        t = result_type_unary_logic(self._type_of(e))
+        if t is None:
+            raise SemanticError(".NOT. exige operando logical")
+        return (tag, e, {'type': t})
 
 
     # =====================================================================
@@ -466,13 +578,10 @@ class SemanticAnalyser:
     # cada GOTO/DO referenciado tem destino válido na program unit.
     # =====================================================================
     def _validate_labels(self):
-        # Percorre todas as labels que foram chamadas por GOTO ou DO nesta program unit
-        for label in self.referenced_labels:
-            # Se a label não existir no scope atual (não foi declarada por um 'labeled' statement)
-            if not self.table.lookup_label(label):
-                raise SemanticError(
-                    f"A label '{label}' foi referenciada, mas não está definida nesta program unit."
+        for label, line in self.referenced_labels:
+            if self.table.lookup_label(label) is None:
+                self.reporter.report(
+                    f"Label {label} referenciada mas não definida",
+                    line,
                 )
-                
-        # Limpa o set para que a próxima função/subrotina comece com o registo limpo
-        self.referenced_labels.clear()
+        self.referenced_labels = []

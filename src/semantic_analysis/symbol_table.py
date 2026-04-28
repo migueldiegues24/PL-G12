@@ -18,7 +18,7 @@ class Symbol:
         if self.kind == 'array':
             extra = f"({self.size})"
         elif self.kind in ('function', 'subroutine'):
-            extra = f"({', '.join(self.params or [])})"
+            extra = f"({', '.join(str(p) for p in (self.params or []))})"
         return f"Symbol({self.kind} {self.type} {self.name}{extra})"
 
 
@@ -87,6 +87,11 @@ class SymbolTable:
     # Útil para detetar redeclarações ou verificar se um parâmetro já foi declarado.
     def lookup_local(self, id):
         return self.__table[-1].get(id)
+
+    # Procura apenas no scope global, sem fallback para o corrente.
+    # Útil para distinguir nomes de funções/subrotinas de variáveis locais.
+    def lookup_global(self, id):
+        return self.__table[0].get(id)
 
     # Regista uma label de statement (ex: "10 CONTINUE") no scope corrente.
     # Labels têm namespace próprio — não colidem com nomes de variáveis.
