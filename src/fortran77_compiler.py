@@ -3,12 +3,14 @@ import os
 from datetime import datetime
 import pprint
 
-# Imports do teu compilador
 from syntax_analysis.lexer import lexer
 from syntax_analysis.parser import parser
+from semantic_analysis.analyser import SemanticAnalyser
+from code_generation.builder import IRBuilder
+from code_generation.optimizer import optimize
+from code_generation.emitter import Emitter
 
 def save_log(filepath, content, title, input_file, dt):
-    """Função genérica para salvar logs formatados"""
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"--- {title} ---\n")
@@ -58,9 +60,43 @@ def main():
     if ast:
         parser_log_path = os.path.join(log_dir, f"{timestamp}_parser_ast.log")
         save_log(parser_log_path, ast, "Árvore Sintática Abstrata (AST)", input_file, dt)
-        print("\033[92mSucesso:\033[0m Programa gramaticalmente correto.")
+        print("\033[92mSucesso:\033[0m Programa sintáticamente validade.")
     else:
         print("\033[91mErro:\033[0m A análise sintática falhou.")
+        return
+
+    # 3. ANÁLISE SEMÂNTICA
+    print(f"A executar análise semântica: {input_file}...")
+    analyser = SemanticAnalyser()
+    annotated_ast, _, reporter = analyser.analyse(ast)
+
+    semantic_log_path = os.path.join(log_dir, f"{timestamp}_semantic_ast.log")
+    save_log(semantic_log_path, annotated_ast, "AST Anotada (Semântica)", input_file, dt)
+
+    if reporter.has_errors():
+        print(f"\033[91mErro:\033[0m Análise semântica falhou com {reporter.count()} erro(s).")
+        return
+    print("\033[92mSucesso:\033[0m Programa semânticamente válido.")
+
+    # 4. GERAÇÃO DE CÓDIGO (IR → optimize → EWVM)
+    print(f"A gerar IR: {input_file}...")
+    builder = IRBuilder(analyser.table)
+    ir_code, layout = builder.build(annotated_ast)
+
+    ir_log_path = os.path.join(log_dir, f"{timestamp}_ir.log")
+    save_log(ir_log_path, ir_code, "Representação Intermédia (IR)", input_file, dt)
+
+    optimized = optimize(ir_code)
+    if optimized is not ir_code:
+        opt_log_path = os.path.join(log_dir, f"{timestamp}_ir_optimized.log")
+        save_log(opt_log_path, optimized, "IR Otimizada", input_file, dt)
+
+    print("A gerar código EWVM...")
+    asm = Emitter(layout).emit(optimized)
+    asm_log_path = os.path.join(log_dir, f"{timestamp}_ewvm.asm")
+    save_log(asm_log_path, "\n".join(asm), "Código EWVM", input_file, dt)
+    print("\033[92mSucesso:\033[0m Código EWVM gerado.")
+
 
 if __name__ == "__main__":
     main()
