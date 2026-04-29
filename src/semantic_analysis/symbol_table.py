@@ -106,11 +106,13 @@ class SymbolTable:
 
     # Marca uma variável como inicializada (atribuída pelo menos uma vez).
     # Útil para avisar uso antes de inicializar. Procura segue a mesma
-    # regra do lookup: corrente + global.
+    # regra do lookup: corrente + global. Aceita 'var' e 'param' (em
+    # Fortran 77 os argumentos passam por referência e podem ser modificados
+    # como variáveis locais).
     def initialize(self, name, line=None):
         for table in (self.__table[-1], self.__table[0]):
             if name in table:
-                if table[name].kind != "var":
+                if table[name].kind not in ("var", "param"):
                     raise SemanticError(f"O identificador não é uma variável: {name}", line)
                 table[name].initialized = True
                 return

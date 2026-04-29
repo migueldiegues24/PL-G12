@@ -1,12 +1,18 @@
 from code_generation import ir
-from code_generation.layout import GlobalLayout
+from code_generation.layout import GlobalLayout, LocalLayout
+from semantic_analysis.builtins import BUILTINS
 
 
 # Tradução AST anotada → IR linear.
 #
-# Esta versão cobre os exemplos 1-4 (sem funções/subrotinas do utilizador,
-# apenas o programa principal e funções intrínsecas via builtins). Funções
-# do utilizador serão tratadas numa fase posterior, partilhando esta IR.
+# Cobre o programa principal, funções e subrotinas do utilizador, bem como
+# funções intrínsecas via tabela de built-ins. As program units do utilizador
+# são emitidas após o HALT do main, sob labels com o nome da função/subrotina.
+
+
+# Conjunto de nomes de built-ins (validar rapidamente se um 'call' é nativo
+# ou definido pelo utilizador).
+_BUILTIN_NAMES = {b[0] for b in BUILTINS}
 
 
 class IRBuilder:
@@ -15,6 +21,8 @@ class IRBuilder:
         self.layout  = GlobalLayout()
         self.code    = []           # lista de instruções IR
         self._lblcnt = 0
+        self._current_local = None    # LocalLayout activo, None no main
+        self._current_n_locals = 0    # tamanho do frame local activo
 
     # Identificador único para labels geradas pelo compilador (IF, DO, ...).
     # Labels do programador (10, 20, ...) são reusadas tal como vêm na AST,
@@ -28,16 +36,47 @@ class IRBuilder:
 
     # Entry point. Devolve a lista de instruções IR.
     def build(self, ast):
-        # Para já só tratamos do main_program; subprogramas serão append-ed
-        # mais tarde nesta mesma lista, com convenções a definir.
+        # 1. Programa principal vem primeiro, terminado por HALT.
         for unit in ast[1]:
             if unit[0] == 'main_program':
                 self._emit_main(unit)
         self.code.append(ir.HALT())
+
+        # 2. Subprogramas após o HALT — só executam quando chamados via CALL.
+        for unit in ast[1]:
+            if unit[0] == 'function':
+                self._emit_function(unit)
+            elif unit[0] == 'subroutine':
+                self._emit_subroutine(unit)
+
         return self.code, self.layout
 
     def _emit(self, instr):
         self.code.append(instr)
+
+    # ---------- Acesso a variáveis (scope-aware) ----------
+    # Decidem global vs local consoante o scope ativo. Usa-se em todas as
+    # leituras/escritas de variáveis simples e em arrays (indexados).
+
+    def _emit_load_var(self, name, type_):
+        if self._current_local is not None and name in self._current_local:
+            self._emit(ir.LOADL(name, type_, self._current_local.of(name)))
+        else:
+            self._emit(ir.LOAD(name, type_))
+
+    def _emit_store_var(self, name, type_):
+        if self._current_local is not None and name in self._current_local:
+            self._emit(ir.STOREL(name, type_, self._current_local.of(name)))
+        else:
+            self._emit(ir.STORE(name, type_))
+
+    def _scope_type(self, name):
+        if self._current_local is not None and name in self._current_local:
+            return self._current_local.type.get(name)
+        if name in self.layout.type:
+            return self.layout.type[name]
+        sym = self.table.lookup_global(name)
+        return sym.type if sym else None
 
     # ---------- Main program ----------
     def _emit_main(self, node):
@@ -60,11 +99,16 @@ class IRBuilder:
             if it[0] == 'decl':
                 _, type_, decls = it
                 for d in decls:
+                    name = d[1]
+                    # Forward-decl do tipo de retorno de uma função externa
+                    # (ex: 'INTEGER CONVRT' no main): não reservar slot global.
+                    sym = self.table.lookup_global(name)
+                    if sym and sym.kind in ('function', 'subroutine'):
+                        continue
                     if d[0] == 'var_decl':
-                        self.layout.allocate(d[1], 'var', type=type_)
+                        self.layout.allocate(name, 'var', type=type_)
                     elif d[0] == 'array_decl':
-                        # ('array_decl', NAME, size)
-                        self.layout.allocate(d[1], 'array', arr_size=d[2], type=type_)
+                        self.layout.allocate(name, 'array', arr_size=d[2], type=type_)
 
     def _emit_globals_init(self):
         # Reserva espaço inicializado a 0 para todas as variáveis/arrays.
@@ -74,6 +118,102 @@ class IRBuilder:
             zero  = 0.0 if type_ == 'real' else 0
             for _ in range(n):
                 self._emit(ir.CONST(zero, type_))
+
+    # ---------- Subprogramas ----------
+    def _emit_function(self, node):
+        # ('function', return_type, name, params, body)
+        _, ret_type, name, params, body = node
+        local = LocalLayout(n_args=len(params), has_retval=True)
+
+        # Parâmetros (índices 1..N).
+        param_types = self._param_types_for(name)
+        for i, p in enumerate(params, start=1):
+            ptype = param_types[i - 1] if i - 1 < len(param_types) else None
+            local.allocate_param(p, i, ptype or 'integer')
+        # Slot de retorno: tem o nome da função.
+        local.allocate_retval(name, ret_type or 'integer')
+        # Locais regulares (declarações no corpo, excluindo params e nome).
+        self._collect_locals_from_body(body, local, exclude={name, *params})
+
+        self._emit(ir.LABEL(name))
+        n_locals = local.total_locals()
+        if n_locals > 0:
+            self._emit(ir.PUSHN(n_locals))
+
+        prev_local = self._current_local
+        prev_n_locals = self._current_n_locals
+        self._current_local = local
+        self._current_n_locals = n_locals
+        for it in body[1]:
+            if it[0] == 'decl':
+                continue
+            self._emit_stmt(it)
+        # RETURN final defensivo (caso a função não termine explicitamente).
+        if not self.code or self.code[-1][0] != 'RETURN':
+            self._emit_subprog_return()
+        self._current_local = prev_local
+        self._current_n_locals = prev_n_locals
+
+    def _emit_subroutine(self, node):
+        # ('subroutine', name, params, body)
+        _, name, params, body = node
+        local = LocalLayout(n_args=len(params), has_retval=False)
+
+        param_types = self._param_types_for(name)
+        for i, p in enumerate(params, start=1):
+            ptype = param_types[i - 1] if i - 1 < len(param_types) else None
+            local.allocate_param(p, i, ptype or 'integer')
+        self._collect_locals_from_body(body, local, exclude=set(params))
+
+        self._emit(ir.LABEL(name))
+        n_locals = local.total_locals()
+        if n_locals > 0:
+            self._emit(ir.PUSHN(n_locals))
+
+        prev_local = self._current_local
+        prev_n_locals = self._current_n_locals
+        self._current_local = local
+        self._current_n_locals = n_locals
+        for it in body[1]:
+            if it[0] == 'decl':
+                continue
+            self._emit_stmt(it)
+        if not self.code or self.code[-1][0] != 'RETURN':
+            self._emit_subprog_return()
+        self._current_local = prev_local
+        self._current_n_locals = prev_n_locals
+
+    # Em subprogramas com locais, descartamos explicitamente o frame antes
+    # de RETURN. A documentação da EWVM diz que RETURN faz sp = fp (que já
+    # devolveria o espaço dos locais), mas a implementação observada não
+    # cumpre isso — sem este POPN, a stack acumula 'lixo' por chamada e o
+    # caller acaba a ler valores errados depois do CALL.
+    def _emit_subprog_return(self):
+        if self._current_n_locals > 0:
+            self._emit(ir.POPN(self._current_n_locals))
+        self._emit(ir.RETURN())
+
+    def _collect_locals_from_body(self, body, local, exclude):
+        for it in body[1]:
+            if it[0] != 'decl':
+                continue
+            _, type_, decls = it
+            for d in decls:
+                name = d[1]
+                if name in exclude:
+                    # Mesmo se aparecer numa declaração (ex: 'INTEGER N, B'
+                    # para tipar parâmetros), o slot já existe.
+                    if name in local.offset and local.type.get(name) is None:
+                        local.type[name] = type_
+                    continue
+                if d[0] == 'var_decl':
+                    local.allocate_local(name, kind='var', type=type_)
+                elif d[0] == 'array_decl':
+                    local.allocate_local(name, kind='array', arr_size=d[2], type=type_)
+
+    def _param_types_for(self, fn_name):
+        sym = self.table.lookup_global(fn_name)
+        return list(sym.params) if sym and sym.params else []
 
     # ---------- Statements ----------
     def _emit_stmt(self, node):
@@ -95,7 +235,7 @@ class IRBuilder:
         target_type = self._target_type(target)
         self._emit_expr(expr, expected_type=target_type)
         if target[0] == 'var':
-            self._emit(ir.STORE(target[1], target_type))
+            self._emit_store_var(target[1], target_type)
         elif target[0] == 'index':
             # target = ('index', NAME, [arg])  ou já anotado
             name = target[1]
@@ -106,19 +246,14 @@ class IRBuilder:
     def _target_type(self, target):
         # Atribuições produzidas pelo analyser não anotam o LHS; vamos à
         # tabela buscar o tipo.
-        if target[0] == 'var':
-            return self._sym_type(target[1])
-        if target[0] == 'index':
+        if target[0] in ('var', 'index'):
             return self._sym_type(target[1])
         return None
 
     def _sym_type(self, name):
-        # Tipos das vars/arrays do main estão no layout (registado em
-        # _collect_globals_from_body). Funções globais ficam na tabela.
-        if name in self.layout.type:
-            return self.layout.type[name]
-        sym = self.table.lookup_global(name)
-        return sym.type if sym else None
+        # Tipo da variável: primeiro consulta o scope corrente (local), depois
+        # globais, depois símbolos globais (funções/subrotinas).
+        return self._scope_type(name)
 
     def _stmt_if_logico(self, node):
         # ('if_logico', cond, stmt) — IF (cond) stmt
@@ -164,15 +299,11 @@ class IRBuilder:
         L_end  = self._new_label('DOEND')
         # Inicializa contador.
         self._emit_expr(e_ini, expected_type='integer')
-        self._emit(ir.STORE(var_name, 'integer'))
-        # Avalia limite e passo uma vez e guarda em temporários no global.
-        # Para evitar criar temporários, recalculamos limite/passo a cada
-        # iteração — simples e correto para os exemplos. Optimizer pode
-        # depois extrair invariantes.
+        self._emit_store_var(var_name, 'integer')
+        # Recalcula limite/passo a cada iteração — o optimizer pode depois
+        # extrair invariantes para um temporário.
         self._emit(ir.LABEL(L_top))
-        # Teste: var <= limite (para passo positivo). Para já só passos > 0,
-        # standard nos exemplos 1-4.
-        self._emit(ir.LOAD(var_name, 'integer'))
+        self._emit_load_var(var_name, 'integer')
         self._emit_expr(e_fim, expected_type='integer')
         self._emit(ir.RELOP('.LE.', 'integer'))
         self._emit(ir.JZ(L_end))
@@ -196,8 +327,23 @@ class IRBuilder:
         self._emit(ir.JUMP(self._user_label(label_n)))
 
     def _stmt_return(self, node):
-        # No main program, RETURN é equivalente a HALT.
-        self._emit(ir.HALT())
+        # No main program é HALT; em subprogramas, descarta locais e RETURN.
+        if self._current_local is None:
+            self._emit(ir.HALT())
+        else:
+            self._emit_subprog_return()
+
+    def _stmt_call(self, node):
+        # ('call', NAME, [args_anotados]) — chamada a SUBROUTINE.
+        _, name, args = node
+        param_types = self._param_types_for(name)
+        for i, a in enumerate(args):
+            expected = param_types[i] if i < len(param_types) else None
+            self._emit_expr(a, expected_type=expected)
+        self._emit(ir.PUSHA(name))
+        self._emit(ir.CALL_USER(name, len(args), False))
+        if len(args) > 0:
+            self._emit(ir.POPN(len(args)))
 
     def _stmt_read(self, node):
         # ('read', [items])
@@ -209,7 +355,7 @@ class IRBuilder:
                 name = it[1]
                 type_ = self._extract_type(it) or self._sym_type(name) or 'integer'
                 self._emit(ir.READ(type_, name))
-                self._emit(ir.STORE(name, type_))
+                self._emit_store_var(name, type_)
             elif tag == 'index':
                 # ('index', NAME, [arg], {type})
                 name = it[1]
@@ -254,13 +400,13 @@ class IRBuilder:
         if target != label_n:
             return False
         # Incrementa var pelo step (default 1).
-        self._emit(ir.LOAD(var_name, 'integer'))
+        self._emit_load_var(var_name, 'integer')
         if e_step is None:
             self._emit(ir.CONST(1, 'integer'))
         else:
             self._emit_expr(e_step, expected_type='integer')
         self._emit(ir.BINOP('+', 'integer'))
-        self._emit(ir.STORE(var_name, 'integer'))
+        self._emit_store_var(var_name, 'integer')
         self._emit(ir.JUMP(L_top))
         self._emit(ir.LABEL(L_end))
         self._do_stack.pop()
@@ -303,7 +449,7 @@ class IRBuilder:
         # ('var', NAME, {type})
         _, name, meta = node
         t = meta['type']
-        self._emit(ir.LOAD(name, t))
+        self._emit_load_var(name, t)
         return t
 
     def _expr_index(self, node):
@@ -315,12 +461,28 @@ class IRBuilder:
         return t
 
     def _expr_call(self, node):
-        # ('call', NAME, [args_anotados], {type}) — função (intrínseca por agora)
+        # ('call', NAME, [args_anotados], {type}) — função intrínseca ou utilizador.
         _, name, args, meta = node
-        for a in args:
-            self._emit_expr(a)
-        self._emit(ir.CALL_BUILTIN(name, len(args), meta['type']))
-        return meta['type']
+        ret_type = meta['type']
+        if name in _BUILTIN_NAMES:
+            for a in args:
+                self._emit_expr(a)
+            self._emit(ir.CALL_BUILTIN(name, len(args), ret_type))
+            return ret_type
+
+        # Função do utilizador: convenção de chamada com slot de retorno
+        # alocado pelo caller imediatamente abaixo dos argumentos.
+        zero = 0.0 if ret_type == 'real' else 0
+        self._emit(ir.CONST(zero, ret_type))
+        param_types = self._param_types_for(name)
+        for i, a in enumerate(args):
+            expected = param_types[i] if i < len(param_types) else None
+            self._emit_expr(a, expected_type=expected)
+        self._emit(ir.PUSHA(name))
+        self._emit(ir.CALL_USER(name, len(args), True))
+        if len(args) > 0:
+            self._emit(ir.POPN(len(args)))
+        return ret_type
 
     def _expr_binop(self, node):
         # ('binop', op, a, b, {type})

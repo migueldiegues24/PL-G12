@@ -52,8 +52,9 @@ class Emitter:
         self.out.append('start')
         for instr in code:
             self._dispatch(instr)
-        # 'stop' é gerado pelo HALT; se faltar, garantimos.
-        if not self.out or self.out[-1] != 'stop':
+        # 'stop' é gerado pelo HALT do main. Garantimos um 'stop' no
+        # programa caso a IR não contenha qualquer HALT (defensivo).
+        if 'stop' not in self.out:
             self.out.append('stop')
         return self.out
 
@@ -88,6 +89,14 @@ class Emitter:
     def _op_STORE(self, instr):
         _, name, _t = instr
         self._w(f"STOREG {self.layout.of(name)}")
+
+    def _op_LOADL(self, instr):
+        _, _name, _t, off = instr
+        self._w(f"PUSHL {off}")
+
+    def _op_STOREL(self, instr):
+        _, _name, _t, off = instr
+        self._w(f"STOREL {off}")
 
     def _op_LOADADDR(self, instr):
         _, name = instr
@@ -226,12 +235,26 @@ class Emitter:
         else:
             raise NotImplementedError(f"Built-in não mapeada: {name} → {ret_t}")
 
-    def _op_CALL(self, instr):
-        # Por implementar quando atacarmos funções do utilizador.
-        raise NotImplementedError("CALL ainda não implementado nesta fase")
+    def _op_PUSHA(self, instr):
+        _, label = instr
+        self._w(f"PUSHA {label}")
 
-    def _op_RET(self, _instr):
-        raise NotImplementedError("RET ainda não implementado nesta fase")
+    def _op_CALL_USER(self, _instr):
+        # CALL na EWVM já espera a label no topo da pilha (empilhada por PUSHA).
+        self._w("CALL")
+
+    def _op_RETURN(self, _instr):
+        self._w("RETURN")
+
+    def _op_PUSHN(self, instr):
+        _, n = instr
+        if n > 0:
+            self._w(f"PUSHN {n}")
+
+    def _op_POPN(self, instr):
+        _, n = instr
+        if n > 0:
+            self._w(f"POP {n}")
 
     def _op_HALT(self, _instr):
         if self.out and self.out[-1] != 'stop':

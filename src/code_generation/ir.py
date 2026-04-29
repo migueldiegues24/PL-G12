@@ -27,6 +27,15 @@ def LOAD(name, type):
 def STORE(name, type):
     return ('STORE', name, type)
 
+# Equivalentes para variáveis locais: o offset é relativo a fp e já vem
+# resolvido pelo builder (negativo para parâmetros e slot de retorno,
+# não-negativo para locais regulares).
+def LOADL(name, type, offset):
+    return ('LOADL', name, type, offset)
+
+def STOREL(name, type, offset):
+    return ('STOREL', name, type, offset)
+
 # Empilha o endereço base do array (PUSHGA na EWVM).
 def LOADADDR(name):
     return ('LOADADDR', name)
@@ -88,12 +97,28 @@ def WRITE(type):
 def WRITELN():
     return ('WRITELN',)
 
-# Chamada de função (deixado pronto para a fase seguinte).
-def CALL(name, n_args):
-    return ('CALL', name, n_args)
+# Empilha o endereço de código de uma label (PUSHA na EWVM).
+def PUSHA(label):
+    return ('PUSHA', label)
 
-def RET():
-    return ('RET',)
+# Chamada de subprograma do utilizador.
+# A label tem de ter sido empilhada antes (com PUSHA). A EWVM faz o resto:
+# guarda pc/fp na call stack, atualiza pc para o endereço, e fp para sp.
+# 'n_args' e 'has_retval' são informação para o emitter cuidar da limpeza.
+def CALL_USER(name, n_args, has_retval):
+    return ('CALL_USER', name, n_args, has_retval)
+
+# Retorno de subprograma: restaura fp e pc, sp = fp.
+def RETURN():
+    return ('RETURN',)
+
+# Aloca n slots inicializados a 0 na pilha de operandos (frame de locais).
+def PUSHN(n):
+    return ('PUSHN', n)
+
+# Descarta n valores do topo da pilha de operandos.
+def POPN(n):
+    return ('POPN', n)
 
 # Marca fim do programa (HALT na EWVM, ou STOP).
 def HALT():
