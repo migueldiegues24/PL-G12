@@ -8,7 +8,6 @@
 | A104433 | Francisco Jorge Salgado Castro    |
 | A107361 | Miguel Rocha Diegues              |
 
-Repositório: <https://github.com/migueldiegues24/PL-G12>
 
 ---
 
