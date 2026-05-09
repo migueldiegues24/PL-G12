@@ -1,0 +1,37 @@
+--- AST Anotada (Semântica) ---
+Ficheiro Fonte: examples/exemplo2_fatorial.f
+Data/Hora: 2026-05-09 15:34:29
+----------------------------------------
+
+( 'program',
+  [ ( 'main_program',
+      'FATORIAL',
+      ( 'body',
+        [ ( 'decl',
+            'integer',
+            [('var_decl', 'N'), ('var_decl', 'I'), ('var_decl', 'FAT')]),
+          ( 'print',
+            [ ( 'string',
+                'Introduza um numero inteiro positivo:',
+                {'type': 'string'})]),
+          ('read', [('var', 'N', {'type': 'integer'})]),
+          ('assign', ('var', 'FAT'), ('num', 1, {'type': 'integer'})),
+          ( 'do',
+            10,
+            'I',
+            ('num', 1, {'type': 'integer'}),
+            ('var', 'N', {'type': 'integer'}),
+            None),
+          ( 'assign',
+            ('var', 'FAT'),
+            ( 'binop',
+              '*',
+              ('var', 'FAT', {'type': 'integer'}),
+              ('var', 'I', {'type': 'integer'}),
+              {'type': 'integer'})),
+          ('labeled', 10, ('continue',)),
+          ( 'print',
+            [ ('string', 'Fatorial de', {'type': 'string'}),
+              ('var', 'N', {'type': 'integer'}),
+              ('string', ':', {'type': 'string'}),
+              ('var', 'FAT', {'type': 'integer'})])]))])

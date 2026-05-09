@@ -1,0 +1,63 @@
+--- Código EWVM ---
+Ficheiro Fonte: examples/exemplo3_primo.f
+Data/Hora: 2026-05-09 15:34:33
+----------------------------------------
+
+start
+PUSHI 0
+PUSHI 0
+PUSHI 0
+PUSHS "Introduza um numero inteiro positivo:"
+WRITES
+WRITELN
+READ
+ATOI
+STOREG 0
+PUSHI 1
+STOREG 2
+PUSHI 2
+STOREG 1
+L20:
+PUSHG 1
+PUSHG 0
+PUSHI 2
+DIV
+INFEQ
+PUSHG 2
+AND
+JZ IFEND1
+PUSHG 0
+PUSHG 1
+MOD
+PUSHI 0
+EQUAL
+JZ IFEND2
+PUSHI 0
+STOREG 2
+IFEND2:
+PUSHG 1
+PUSHI 1
+ADD
+STOREG 1
+JUMP L20
+IFEND1:
+PUSHG 2
+JZ IFELSE3
+PUSHG 0
+WRITEI
+PUSHS " "
+WRITES
+PUSHS " e um numero primo"
+WRITES
+WRITELN
+JUMP IFEND4
+IFELSE3:
+PUSHG 0
+WRITEI
+PUSHS " "
+WRITES
+PUSHS " nao e um numero primo"
+WRITES
+WRITELN
+IFEND4:
+stop

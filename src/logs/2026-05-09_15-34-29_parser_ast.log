@@ -1,0 +1,25 @@
+--- Árvore Sintática Abstrata (AST) ---
+Ficheiro Fonte: examples/exemplo2_fatorial.f
+Data/Hora: 2026-05-09 15:34:29
+----------------------------------------
+
+( 'program',
+  [ ( 'main_program',
+      'FATORIAL',
+      ( 'body',
+        [ ( 'decl',
+            'integer',
+            [('var_decl', 'N'), ('var_decl', 'I'), ('var_decl', 'FAT')]),
+          ('print', [('string', 'Introduza um numero inteiro positivo:')]),
+          ('read', [('var', 'N')]),
+          ('assign', ('var', 'FAT'), ('num', 1)),
+          ('do', 10, 'I', ('num', 1), ('var', 'N'), None),
+          ( 'assign',
+            ('var', 'FAT'),
+            ('binop', '*', ('var', 'FAT'), ('var', 'I'))),
+          ('labeled', 10, ('continue',)),
+          ( 'print',
+            [ ('string', 'Fatorial de'),
+              ('var', 'N'),
+              ('string', ':'),
+              ('var', 'FAT')])]))])

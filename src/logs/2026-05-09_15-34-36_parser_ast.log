@@ -1,0 +1,24 @@
+--- Árvore Sintática Abstrata (AST) ---
+Ficheiro Fonte: examples/exemplo4_soma.f
+Data/Hora: 2026-05-09 15:34:36
+----------------------------------------
+
+( 'program',
+  [ ( 'main_program',
+      'SOMAARR',
+      ( 'body',
+        [ ('decl', 'integer', [('array_decl', 'NUMS', 5)]),
+          ('decl', 'integer', [('var_decl', 'I'), ('var_decl', 'SOMA')]),
+          ('assign', ('var', 'SOMA'), ('num', 0)),
+          ('print', [('string', 'Introduza 5 numeros inteiros:')]),
+          ('do', 30, 'I', ('num', 1), ('num', 5), None),
+          ('read', [('call_or_array', 'NUMS', [('var', 'I')])]),
+          ( 'assign',
+            ('var', 'SOMA'),
+            ( 'binop',
+              '+',
+              ('var', 'SOMA'),
+              ('call_or_array', 'NUMS', [('var', 'I')]))),
+          ('labeled', 30, ('continue',)),
+          ( 'print',
+            [('string', 'A soma dos numeros e: '), ('var', 'SOMA')])]))])
