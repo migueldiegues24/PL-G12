@@ -1,0 +1,9 @@
+--- Representação Intermédia (IR) ---
+Ficheiro Fonte: examples/exemplo1_hello.f
+Data/Hora: 2026-05-09 15:34:23
+----------------------------------------
+
+[ ('CONST', 'Ola, Mundo!', 'string'),
+  ('WRITE', 'string'),
+  ('WRITELN',),
+  ('HALT',)]

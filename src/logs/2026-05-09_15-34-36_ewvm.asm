@@ -1,0 +1,63 @@
+--- Código EWVM ---
+Ficheiro Fonte: examples/exemplo4_soma.f
+Data/Hora: 2026-05-09 15:34:36
+----------------------------------------
+
+start
+PUSHI 0
+PUSHI 0
+PUSHI 0
+PUSHI 0
+PUSHI 0
+PUSHI 0
+PUSHI 0
+PUSHI 0
+STOREG 6
+PUSHS "Introduza 5 numeros inteiros:"
+WRITES
+WRITELN
+PUSHI 1
+STOREG 5
+DO1:
+PUSHG 5
+PUSHI 5
+INFEQ
+JZ DOEND2
+READ
+ATOI
+PUSHG 5
+PUSHI 1
+SUB
+PUSHGP
+PUSHI 0
+PADD
+SWAP
+PADD
+SWAP
+STORE 0
+PUSHG 6
+PUSHG 5
+PUSHI 1
+SUB
+PUSHGP
+PUSHI 0
+PADD
+SWAP
+PADD
+LOAD 0
+ADD
+STOREG 6
+PUSHG 5
+PUSHI 1
+ADD
+STOREG 5
+JUMP DO1
+DOEND2:
+PUSHS "A soma dos numeros e: "
+WRITES
+PUSHS " "
+WRITES
+PUSHG 6
+WRITEI
+WRITELN
+stop

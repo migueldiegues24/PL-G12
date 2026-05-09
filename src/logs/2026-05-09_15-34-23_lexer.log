@@ -1,0 +1,14 @@
+--- Relatório Léxico ---
+Ficheiro Fonte: examples/exemplo1_hello.f
+Data/Hora: 2026-05-09 15:34:23
+----------------------------------------
+
+LexToken(PROGRAM,'PROGRAM',1,6)
+LexToken(IDENTIFIER,'HELLO',1,14)
+LexToken(NEWLINE,'\n',1,19)
+LexToken(PRINT,'PRINT',2,26)
+LexToken(TIMES,'*',2,32)
+LexToken(COMMA,',',2,33)
+LexToken(STRING,'Ola, Mundo!',2,35)
+LexToken(NEWLINE,'\n',2,48)
+LexToken(END,'END',3,55)
